@@ -313,6 +313,7 @@ current_model.to(device)
 test_optimizer = torch.optim.Adam(current_model.parameters(), lr=args.lr)
 loss_func = torch.nn.MSELoss() # torch.nn.CrossEntropyLoss()
 
+torch.save(current_model, "test_save.ckpt")
 
 all_data = DataLoader(train_data_path="./datasets/ppdb/simpleppdbpp-s-lexical.txt", dev_data_path=None, test_data_path= "./datasets/semeval/semeval_rankings.json", args=args)
 
@@ -327,6 +328,7 @@ for i in range(args.epochs):
     if test_performance >= best_dev_performance:
         print('New best performance!!!')
         best_dev_performance = test_performance
+        torch.save(current_model, "./best_model_"+str(best_dev_performance)+".ckpt")
         final_performance = test_performance
 
 print("Best performance:", final_performance)
