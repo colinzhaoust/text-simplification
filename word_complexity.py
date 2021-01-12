@@ -282,7 +282,7 @@ parser.add_argument("--lrdecay", default=0.8, type=float, required=False,
 parser.add_argument("--do_clean", default=True, type=bool, required=False,
                     help="if we do cleaning on the simpleppdb")
 parser.add_argument("--train_bert", default=False, type=bool, required=False,
-                    help="if we do cleaning on the simpleppdb")
+                    help="if we do cleaning on the simpleppdb...")
 parser.add_argument("--max_len", default=5, type=int, required=False,
                     help="number of words")
 parser.add_argument("--epochs", default=15, type=int, required=False,
