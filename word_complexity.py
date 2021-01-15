@@ -65,7 +65,7 @@ class DataLoader:
 
             random.shuffle(raw_ppdb)
 
-            for line in raw_ppdb:
+            for line in raw_ppdb[:args.covered_rules]:
                 temp_datapiece = line.rstrip().split("\t")
                 if self.args.do_clean == True:
                     if not self.simpleppdb_cleaning(temp_datapiece):
@@ -145,6 +145,8 @@ class DataLoader:
             instance_pairs["cands"] = candidates
 
             tensorized_dataset += instance_pairs
+
+        return tensorized_dataset
             
             
     def tensorize_one_exampe(self, instance):
@@ -202,16 +204,16 @@ class ComplexityRanker(torch.nn.Module):
         self.classification = torch.nn.Sequential(
                 torch.nn.Linear(d_in, h),
                 torch.nn.Tanh(),
-                torch.nn.Dropout(p=drop_out),
+                # torch.nn.Dropout(p=drop_out),
                 torch.nn.Linear(h, h),
                 torch.nn.Tanh(),
-                torch.nn.Dropout(p=drop_out),
+                # torch.nn.Dropout(p=drop_out),
                 torch.nn.Linear(h, h),
                 torch.nn.Tanh(),
-                torch.nn.Dropout(p=drop_out),
+                # torch.nn.Dropout(p=drop_out),
                 torch.nn.Linear(h, h),
                 torch.nn.Tanh(),
-                torch.nn.Dropout(p=drop_out),
+                # torch.nn.Dropout(p=drop_out),
                 torch.nn.Linear(h, d_out)
         )
 
@@ -219,7 +221,7 @@ class ComplexityRanker(torch.nn.Module):
         rep1 = self.bert(token1) # self.text_specific(self.bert(token1))
         rep2 = self.bert(token2) # self.text_specific(self.bert(token2))
 
-        rep3 = torch.abs(torch.substract(rep1, rep2))
+        rep3 = torch.abs(torch.sub(rep1, rep2))
 
         cls_rep = torch.cat([rep1, rep2, rep3])
         predictions = self.classification(cls_rep)
@@ -283,7 +285,7 @@ parser.add_argument("--gpu", default='0', type=str, required=False,
                     help="choose which gpu to use")
 parser.add_argument("--model", default='bert-base-uncased', type=str, required=False,
                     help="choose the model to test")
-parser.add_argument("--lr", default=0.0001, type=float, required=False,
+parser.add_argument("--lr", default=1e-5, type=float, required=False,
                     help="initial learning rate")
 parser.add_argument("--lrdecay", default=0.0, type=float, required=False,
                     help="learning rate decay every 5 epochs")
@@ -325,7 +327,7 @@ loss_func = torch.nn.MSELoss() # torch.nn.CrossEntropyLoss()
 
 torch.save(current_model, "test_save.ckpt")
 
-all_data = DataLoader(train_data_path="./datasets/ppdb/simpleppdbpp-s-lexical.txt", dev_data_path=None, test_data_path= "./datasets/semeval/semeval_rankings.json", args=args)
+all_data = DataLoader(train_data_path="./datasets/ppdb/simpleppdbpp-s-lexical.txt", dev_data_path=None, test_data_path= "./datasets/semeval_rankings.json", args=args)
 
 best_dev_performance = 0
 final_performance = 0
