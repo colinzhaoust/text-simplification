@@ -37,6 +37,7 @@ class DataLoader:
 
         if dev_data_path is not None:
             self.dev_ppdb = self.simpleppdb_loading(dev_data_path)
+
         print("Finished...")
 
         # GET self.gold_rankings
@@ -54,12 +55,16 @@ class DataLoader:
         self.set = dict()
         self.set["ppdb"] = self.tensorize_ppdb_dataset(self.ppdb)
         self.set["semeval"] = self.tensorize_semeval_dataset(self.semeval)
+        
         print("Finished")
 
     def simpleppdb_loading(self, datapath):
         with open(datapath, 'r') as f:
             ppdb = [] # word1, word2, label
             raw_ppdb = f.readlines()
+
+            random.shuffle(raw_ppdb)
+
             for line in raw_ppdb:
                 temp_datapiece = line.rstrip().split("\t")
                 if self.args.do_clean == True:
@@ -82,6 +87,7 @@ class DataLoader:
                     else:
                         label = 1.0
                     ppdb.append((temp_datapiece[0],temp_datapiece[1],label))
+
         return ppdb
 
     def simpleppdb_cleaning(self, datapiece):
@@ -183,14 +189,14 @@ class ComplexityRanker(torch.nn.Module):
     def __init__(self, config):
         super(ComplexityRanker, self).__init__()
 
-        self.bert = BertEncoder.from_pretrained(config) # output: 1024
+        self.bert = BertEncoder.from_pretrained(config) # output: 768
 
         for param in self.bert.parameters():
             param.requires_grad = False
 
         self.text_specific = torch.nn.Linear(1024, 256)
 
-        d_in, h, d_out = 256*2, 300, 1 
+        d_in, h, d_out = 768*3, 300, 1 
         drop_out = 0.2
 
         self.classification = torch.nn.Sequential(
@@ -210,10 +216,12 @@ class ComplexityRanker(torch.nn.Module):
         )
 
     def forward(self, token1, token2):
-        rep1 = self.text_specific(self.bert(token1))
-        rep2 = self.text_specific(self.bert(token2))
+        rep1 = self.bert(token1) # self.text_specific(self.bert(token1))
+        rep2 = self.bert(token2) # self.text_specific(self.bert(token2))
 
-        cls_rep = torch.cat([rep1, rep2])
+        rep3 = torch.abs(torch.substract(rep1, rep2))
+
+        cls_rep = torch.cat([rep1, rep2, rep3])
         predictions = self.classification(cls_rep)
 
         return predictions
@@ -273,11 +281,11 @@ parser = argparse.ArgumentParser()
 ## parameters
 parser.add_argument("--gpu", default='0', type=str, required=False,
                     help="choose which gpu to use")
-parser.add_argument("--model", default='bert-large-uncased', type=str, required=False,
+parser.add_argument("--model", default='bert-base-uncased', type=str, required=False,
                     help="choose the model to test")
 parser.add_argument("--lr", default=0.0001, type=float, required=False,
                     help="initial learning rate")
-parser.add_argument("--lrdecay", default=0.8, type=float, required=False,
+parser.add_argument("--lrdecay", default=0.0, type=float, required=False,
                     help="learning rate decay every 5 epochs")
 parser.add_argument("--do_clean", default=True, type=bool, required=False,
                     help="if we do cleaning on the simpleppdb")
@@ -285,8 +293,10 @@ parser.add_argument("--train_bert", default=False, type=bool, required=False,
                     help="if we do cleaning on the simpleppdb...")
 parser.add_argument("--max_len", default=5, type=int, required=False,
                     help="number of words")
-parser.add_argument("--epochs", default=15, type=int, required=False,
+parser.add_argument("--epochs", default=3, type=int, required=False,
                     help="number of epochs")
+parser.add_argument("--covered_rules", default=12000, type=int, required=False,
+                    help="number of covered rules")
 
 
 args = parser.parse_args()
@@ -307,7 +317,7 @@ print('current device:', device)
 # torch.cuda.get_device_name(0)
 
 
-current_model = ComplexityRanker("bert-large-uncased")
+current_model = ComplexityRanker(args.model)
 
 current_model.to(device)
 test_optimizer = torch.optim.Adam(current_model.parameters(), lr=args.lr)
@@ -325,6 +335,7 @@ for i in range(args.epochs):
     train(current_model, all_data.set["ppdb"])
     test_performance = test_on_sem(current_model, all_data.set["semeval"])
     print('Test accuracy:', test_performance)
+
     if test_performance >= best_dev_performance:
         print('New best performance!!!')
         best_dev_performance = test_performance
