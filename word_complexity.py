@@ -13,6 +13,7 @@ import collections
 import random
 from tqdm import tqdm
 
+import transformers
 from transformers import *
 import pandas as pd
 import numpy as np
@@ -22,6 +23,10 @@ from sklearn.utils import shuffle
 from nltk.stem import WordNetLemmatizer
 from scipy.stats import pearsonr
 from sklearn.metrics import precision_score, accuracy_score
+
+transformers.tokenization_utils.logger.setLevel(logging.ERROR)
+transformers.configuration_utils.logger.setLevel(logging.ERROR)
+transformers.modeling_utils.logger.setLevel(logging.ERROR)
 
 
 class DataLoader:
@@ -38,32 +43,38 @@ class DataLoader:
         if dev_data_path is not None:
             self.dev_ppdb = self.simpleppdb_loading(dev_data_path)
 
-        print("Finished...")
+        # print("Finished...")
 
         # GET self.gold_rankings
         print("Loading SemEval 2012 goldrankings...")
         # already prepared
         with open(test_data_path, "r") as f:
             self.semeval = json.load(f)
-        print("Finished...")
+        # print("Finished...")
 
         print("Caching the Examples")
         self.cache_cleaned_data(self.ppdb, "./cleaned_ppdb.json")
-        print("Finished")
+        # print("Finished")
 
         print("Tensorizing the example...")
         self.set = dict()
         self.set["ppdb"] = self.tensorize_ppdb_dataset(self.ppdb)
         self.set["semeval"] = self.tensorize_semeval_dataset(self.semeval)
-        
+
         print("Finished")
 
     def simpleppdb_loading(self, datapath):
+
+        neg, neutral, pos = 0,0,0
+
         with open(datapath, 'r') as f:
             ppdb = [] # word1, word2, label
             raw_ppdb = f.readlines()
 
             random.shuffle(raw_ppdb)
+
+            if args.covered_rules == -1:
+                args.covered_rules = len(raw_ppdb)
 
             for line in raw_ppdb[:args.covered_rules]:
                 temp_datapiece = line.rstrip().split("\t")
@@ -72,10 +83,13 @@ class DataLoader:
                         score = float(temp_datapiece[2]) # simple ppdb score
                         if -1*self.threshold < score < self.threshold:
                             label = 0.0
+                            neutral += 1
                         elif score < -self.threshold:
                             label = -1.0
+                            neg += 1
                         else:
                             label = 1.0
+                            pos += 1
                         ppdb.append((temp_datapiece[0],temp_datapiece[1],label))
                 else:
                     score = float(temp_datapiece[2]) # simple ppdb score
@@ -86,8 +100,13 @@ class DataLoader:
                         label = -1.0
                     else:
                         label = 1.0
-                    ppdb.append((temp_datapiece[0],temp_datapiece[1],label))
 
+                    if args.mode == "classification":
+                        ppdb.append((temp_datapiece[0],temp_datapiece[1], label)) # classification
+                    elif args.mode == "regression":
+                        ppdb.append((temp_datapiece[0],temp_datapiece[1],score)) # regression
+
+        print("Collected distribution:", neg, neutral, pos)
         return ppdb
 
     def simpleppdb_cleaning(self, datapiece):
@@ -121,7 +140,7 @@ class DataLoader:
 
 
     def tensorize_semeval_dataset(self, semeval):
-        tensorized_dataset = list()
+        tensorized_dataset = []
 
         for inst_id in range(301,2011): # include 2010
             instance_pairs = {}
@@ -138,13 +157,13 @@ class DataLoader:
             for cand in candidates:
                 one_example = self.tensorize_one_exampe((target, cand, label))
 
-                instance_pairs["pairs"].append(one_example)
+                instance_pairs["pairs"].extend(one_example)
             
             instance_pairs["inst_id"] = inst_id
             instance_pairs["ranks"] = ranks
             instance_pairs["cands"] = candidates
 
-            tensorized_dataset += instance_pairs
+            tensorized_dataset.append(instance_pairs)
 
         return tensorized_dataset
             
@@ -160,8 +179,8 @@ class DataLoader:
         tokenized_token2 = self.tokenizer.encode(token2, add_special_tokens=True, return_tensors='pt')
 
         one_example.append(
-            {   'token1':torch.tensor(tokenized_token1).to(device),
-                'token2': torch.tensor(tokenized_token2).to(device),
+            {   'token1': tokenized_token1.to(device),
+                'token2': tokenized_token2.to(device),
                 'label': torch.FloatTensor([int(label)]).to(device)
                 })
 
@@ -188,17 +207,23 @@ class BertEncoder(BertModel):
 
 class ComplexityRanker(torch.nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, args):
         super(ComplexityRanker, self).__init__()
 
-        self.bert = BertEncoder.from_pretrained(config) # output: 768
+        self.bert = BertEncoder.from_pretrained(args.model) # output: 768
 
-        for param in self.bert.parameters():
-            param.requires_grad = False
+        if not args.train_bert:
+            for param in self.bert.parameters():
+                param.requires_grad = False
+
+        if "base" in args.model:
+            self.b_hidden = 768
+        elif "large" in args.model:
+            self.b_hidden = 1024
 
         self.text_specific = torch.nn.Linear(1024, 256)
 
-        d_in, h, d_out = 768*3, 300, 1 
+        d_in, h, d_out = self.b_hidden*3, 300, 1 
         drop_out = 0.2
 
         self.classification = torch.nn.Sequential(
@@ -250,25 +275,48 @@ def test_on_sem(model, data):
     # token1
     correct_count = 0
     total = 0
+
+    all_pred_rank = []
+    all_gold_rank = []
+
     # print('Testing:')
     model.eval()
     for tmp_example in tqdm(data):
+        # print(tmp_example)
         ranks = tmp_example["ranks"]
         cands = tmp_example["cands"]
         predictions = []
 
         for cand_pair in tmp_example["pairs"]:
             prediction = model(token1=cand_pair['token1'], token2=cand_pair['token2']) 
-            predictions.append(prediction.data.numpy())
+            predictions.append(prediction.data[0].cpu().numpy())
 
-        # p@1
-        pred1 = cands[np.argsort(predictions)[-1]]
+        # p@1 and pearson
+        pred_rank = np.argsort(predictions).tolist()
+
+        all_pred_rank.extend(pred_rank[::-1])
+
+        temp_gold_rank = []
+        for i in range(len(cands)):
+            temp_gold_rank.append(0)
+
+        for i, rank in enumerate(ranks):
+            for rank_cand in rank:
+                temp_gold_rank[cands.index(rank_cand)] = i
+
+        all_gold_rank.extend(temp_gold_rank)
+
+        # most complicate -> least complicate
+        pred1 = cands[pred_rank[-1]]
         if pred1 in ranks[0]:
             correct_count += 1
 
         total += 1
 
-    return 1.0 * correct_count / total
+    p_at_1 = 1.0 * correct_count / total
+    pearson = pearsonr(all_pred_rank, all_gold_rank)[0]
+
+    return (p_at_1, pearson)
 
 
 # todo
@@ -292,13 +340,15 @@ parser.add_argument("--lrdecay", default=0.0, type=float, required=False,
 parser.add_argument("--do_clean", default=True, type=bool, required=False,
                     help="if we do cleaning on the simpleppdb")
 parser.add_argument("--train_bert", default=False, type=bool, required=False,
-                    help="if we do cleaning on the simpleppdb...")
+                    help="if enables the training of bert")
 parser.add_argument("--max_len", default=5, type=int, required=False,
                     help="number of words")
 parser.add_argument("--epochs", default=3, type=int, required=False,
                     help="number of epochs")
 parser.add_argument("--covered_rules", default=12000, type=int, required=False,
                     help="number of covered rules")
+parser.add_argument("--mode", default="classification", type=str, required=False,
+                    help="classification/regression as labels")
 
 
 args = parser.parse_args()
@@ -319,7 +369,7 @@ print('current device:', device)
 # torch.cuda.get_device_name(0)
 
 
-current_model = ComplexityRanker(args.model)
+current_model = ComplexityRanker(args)
 
 current_model.to(device)
 test_optimizer = torch.optim.Adam(current_model.parameters(), lr=args.lr)
@@ -331,19 +381,21 @@ all_data = DataLoader(train_data_path="./datasets/ppdb/simpleppdbpp-s-lexical.tx
 
 best_dev_performance = 0
 final_performance = 0
+best_epoch = 0
 
 for i in range(args.epochs):
     print('Iteration:', i + 1, '|', 'Current best performance:', final_performance)
     train(current_model, all_data.set["ppdb"])
     test_performance = test_on_sem(current_model, all_data.set["semeval"])
-    print('Test accuracy:', test_performance)
+    print('Test accuracy:', test_performance[0], test_performance[1])
 
-    if test_performance >= best_dev_performance:
+    if test_performance[0] > best_dev_performance:
         print('New best performance!!!')
-        best_dev_performance = test_performance
+        best_dev_performance = test_performance[0]
         torch.save(current_model, "./best_model_"+str(best_dev_performance)+".ckpt")
         final_performance = test_performance
+        best_epoch = i
 
-print("Best performance:", final_performance)
+print("Best performance:", final_performance[0], final_performance[1], best_epoch)
 
 print('end')
