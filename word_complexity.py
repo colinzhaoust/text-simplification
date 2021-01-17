@@ -141,6 +141,8 @@ class DataLoader:
 
     def tensorize_semeval_dataset(self, semeval):
         tensorized_dataset = []
+        count = 0
+        cand_count = 0
 
         for inst_id in range(301,2011): # include 2010
             instance_pairs = {}
@@ -150,6 +152,9 @@ class DataLoader:
             candidates = instance["candidates"] # list
             ranks = instance["rank_cands"]
             label = -2.0
+
+            count += 1
+            cand_count += len(candidates)
 
 
             instance_pairs["pairs"] = []
@@ -164,6 +169,8 @@ class DataLoader:
             instance_pairs["cands"] = candidates
 
             tensorized_dataset.append(instance_pairs)
+
+        print("random guess:", count/cand_count)
 
         return tensorized_dataset
             
@@ -324,7 +331,7 @@ def test_on_sem(model, data):
 
 
 # todo
-# def eval_on_simplicity
+# resolving based evaluation
 
 parser = argparse.ArgumentParser()
 
@@ -394,7 +401,7 @@ for i in range(args.epochs):
         best_dev_performance = test_performance[0]
         torch.save(current_model, "./best_model_"+str(best_dev_performance)+".ckpt")
         final_performance = test_performance
-        best_epoch = i
+        best_epoch = i+1
 
 print("Best performance:", final_performance[0], final_performance[1], best_epoch)
 
