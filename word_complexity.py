@@ -107,6 +107,7 @@ class DataLoader:
                         ppdb.append((temp_datapiece[0],temp_datapiece[1],score)) # regression
 
         print("Collected distribution:", neg, neutral, pos)
+
         return ppdb
 
     def simpleppdb_cleaning(self, datapiece):
@@ -299,8 +300,11 @@ def test_on_sem(model, data):
             predictions.append(prediction.data[0].cpu().numpy())
 
         # p@1 and pearson
+
+        # small -> large
         pred_rank = np.argsort(predictions).tolist()
 
+        # large -> small
         all_pred_rank.extend(pred_rank[::-1])
 
         temp_gold_rank = []
@@ -332,77 +336,91 @@ def test_on_sem(model, data):
 
 # todo
 # resolving based evaluation
+if __name__ == "__main__":
 
-parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser()
 
-## parameters
-parser.add_argument("--gpu", default='0', type=str, required=False,
-                    help="choose which gpu to use")
-parser.add_argument("--model", default='bert-base-uncased', type=str, required=False,
-                    help="choose the model to test")
-parser.add_argument("--lr", default=1e-5, type=float, required=False,
-                    help="initial learning rate")
-parser.add_argument("--lrdecay", default=0.0, type=float, required=False,
-                    help="learning rate decay every 5 epochs")
-parser.add_argument("--do_clean", default=True, type=bool, required=False,
-                    help="if we do cleaning on the simpleppdb")
-parser.add_argument("--train_bert", default=False, type=bool, required=False,
-                    help="if enables the training of bert")
-parser.add_argument("--max_len", default=5, type=int, required=False,
-                    help="number of words")
-parser.add_argument("--epochs", default=3, type=int, required=False,
-                    help="number of epochs")
-parser.add_argument("--covered_rules", default=12000, type=int, required=False,
-                    help="number of covered rules")
-parser.add_argument("--mode", default="classification", type=str, required=False,
-                    help="classification/regression as labels")
+    ## parameters
+    parser.add_argument("--gpu", default='0', type=str, required=False,
+                        help="choose which gpu to use")
+    parser.add_argument("--model", default='bert-large-uncased', type=str, required=False,
+                        help="choose the model to test")
+    parser.add_argument("--lr", default=5e-5, type=float, required=False,
+                        help="initial learning rate")
+    parser.add_argument("--lrdecay", default=0.0, type=float, required=False,
+                        help="learning rate decay every 5 epochs")
+    parser.add_argument("--do_clean", default=True, type=bool, required=False,
+                        help="if we do cleaning on the simpleppdb")
+    parser.add_argument("--train_bert", default=False, type=bool, required=False,
+                        help="if enables the training of bert")
+    parser.add_argument("--max_len", default=15, type=int, required=False,
+                        help="number of words")
+    parser.add_argument("--epochs", default=3, type=int, required=False,
+                        help="number of epochs")
+    parser.add_argument("--covered_rules", default=12000, type=int, required=False,
+                        help="number of covered rules")
+    parser.add_argument("--mode", default="classification", type=str, required=False,
+                        help="classification/regression as labels")
+    parser.add_argument("--output_name", default="semeval", type=str, required=False,
+                        help="special output name")
+
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO)
+
+    if args.gpu == -1:
+        device = torch.device("cpu")
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # device = torch.device("cpu")
+
+    print('current device:', device)
+    # n_gpu = torch.cuda.device_count()
+    # print('number of gpu:', n_gpu)
+    # torch.cuda.get_device_name(0)
 
 
-args = parser.parse_args()
+    current_model = ComplexityRanker(args)
 
-logging.basicConfig(level=logging.INFO)
+    current_model.to(device)
+    test_optimizer = torch.optim.Adam(current_model.parameters(), lr=args.lr)
+    loss_func = torch.nn.MSELoss() # torch.nn.CrossEntropyLoss()
 
-if args.gpu == -1:
-    device = torch.device("cpu")
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # # test save
+    # torch.save(current_model, "test_save.ckpt")
+    # test = torch.load("test_save.ckpt")
 
-# device = torch.device("cpu")
-
-print('current device:', device)
-# n_gpu = torch.cuda.device_count()
-# print('number of gpu:', n_gpu)
-# torch.cuda.get_device_name(0)
+    all_data = DataLoader(train_data_path="./datasets/ppdb/simpleppdbpp-s-lexical.txt", dev_data_path=None, test_data_path= "./datasets/semeval_rankings.json", args=args)
 
 
-current_model = ComplexityRanker(args)
+    if args.output_name != "semeval":
+        for i in range(args.epochs):
+            print('Iteration:', i + 1, '|')
+            train(current_model, all_data.set["ppdb"])
 
-current_model.to(device)
-test_optimizer = torch.optim.Adam(current_model.parameters(), lr=args.lr)
-loss_func = torch.nn.MSELoss() # torch.nn.CrossEntropyLoss()
+        torch.save(current_model, "./" + args.output_name +".ckpt")
+        
+    else:
 
-torch.save(current_model, "test_save.ckpt")
+        best_dev_performance = 0
+        final_performance = 0
+        best_epoch = 0
 
-all_data = DataLoader(train_data_path="./datasets/ppdb/simpleppdbpp-s-lexical.txt", dev_data_path=None, test_data_path= "./datasets/semeval_rankings.json", args=args)
+        for i in range(args.epochs):
+            print('Iteration:', i + 1, '|', 'Current best performance:', final_performance)
+            train(current_model, all_data.set["ppdb"])
+            test_performance = test_on_sem(current_model, all_data.set["semeval"])
+            print('Test accuracy:', test_performance[0], test_performance[1])
 
-best_dev_performance = 0
-final_performance = 0
-best_epoch = 0
+            if test_performance[0] > best_dev_performance:
+                print('New best performance!!!')
+                best_dev_performance = test_performance[0]
+                torch.save(current_model, "./" + args.model + "_" + str(round(best_dev_performance, 3))+".ckpt")
+                final_performance = test_performance
+                best_epoch = i+1
 
-for i in range(args.epochs):
-    print('Iteration:', i + 1, '|', 'Current best performance:', final_performance)
-    train(current_model, all_data.set["ppdb"])
-    test_performance = test_on_sem(current_model, all_data.set["semeval"])
-    print('Test accuracy:', test_performance[0], test_performance[1])
+        print("Best performance:", final_performance[0], final_performance[1], best_epoch)
 
-    if test_performance[0] > best_dev_performance:
-        print('New best performance!!!')
-        best_dev_performance = test_performance[0]
-        torch.save(current_model, "./best_model_"+str(best_dev_performance)+".ckpt")
-        final_performance = test_performance
-        best_epoch = i+1
-
-print("Best performance:", final_performance[0], final_performance[1], best_epoch)
-
-print('end')
+    print('end')
