@@ -1,0 +1,8 @@
+*.tar
+*.tgz
+*.json
+*.csv
+*.zip
+*.txt
+*.xlsx
+datasets/
